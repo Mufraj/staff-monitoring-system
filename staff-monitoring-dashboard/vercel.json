@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "cd staff-monitoring-dashboard/vite-project && npm install",
+  "buildCommand": "cd staff-monitoring-dashboard/vite-project && npm run build",
+  "outputDirectory": "staff-monitoring-dashboard/vite-project/dist"
+}
