@@ -1,6 +1,6 @@
 // api/location.js
 
-const OFFLINE_AFTER_SECONDS = 20;
+const OFFLINE_AFTER_SECONDS = 120;
 
 // Store staff data in memory for demo/live prototype.
 // Note: For production, use a real database like Firebase, Supabase, MongoDB, etc.
