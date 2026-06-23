@@ -118,12 +118,22 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
+  const [taskForm, setTaskForm] = useState({
+    staffId: "Staff-1",
+    title: "",
+    description: "",
+    priority: "medium",
+    siteName: "",
+    dueDate: "",
+  });
+
   const fetchLocation = useCallback(async () => {
     try {
       setLoading(true);
       setErrorMessage("");
 
       const response = await fetch(API_URL);
+
       if (!response.ok) {
         throw new Error(`Location API failed with status ${response.status}`);
       }
@@ -140,6 +150,7 @@ function App() {
   const fetchAttendance = useCallback(async () => {
     try {
       const response = await fetch(ATTENDANCE_API_URL);
+
       if (!response.ok) {
         throw new Error(`Attendance API failed with status ${response.status}`);
       }
@@ -154,6 +165,7 @@ function App() {
   const fetchTasks = useCallback(async () => {
     try {
       const response = await fetch(TASKS_API_URL);
+
       if (!response.ok) {
         throw new Error(`Tasks API failed with status ${response.status}`);
       }
@@ -175,6 +187,7 @@ function App() {
     refreshAll();
 
     const timer = setInterval(refreshAll, refreshInterval * 1000);
+
     return () => clearInterval(timer);
   }, [refreshAll, refreshInterval]);
 
@@ -277,6 +290,89 @@ function App() {
   const coordinatesText = hasLocation
     ? `${selectedStaff.latitude}, ${selectedStaff.longitude}`
     : "";
+
+  const handleTaskFormChange = (event) => {
+    const { name, value } = event.target;
+
+    setTaskForm((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  };
+
+  const assignTask = async (event) => {
+    event.preventDefault();
+
+    if (!taskForm.staffId || !taskForm.title.trim()) {
+      alert("Please select staff and enter task title.");
+      return;
+    }
+
+    try {
+      const response = await fetch(TASKS_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "create",
+          staffId: taskForm.staffId,
+          title: taskForm.title,
+          description: taskForm.description,
+          priority: taskForm.priority,
+          assignedBy: "Supervisor-1",
+          siteName: taskForm.siteName,
+          dueDate: taskForm.dueDate,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Task API failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      setTasksData(data);
+
+      setTaskForm({
+        staffId: taskForm.staffId,
+        title: "",
+        description: "",
+        priority: "medium",
+        siteName: "",
+        dueDate: "",
+      });
+
+      alert("Task assigned successfully.");
+    } catch (error) {
+      alert(error.message || "Unable to assign task.");
+    }
+  };
+
+  const updateTaskStatus = async (taskId, status) => {
+    try {
+      const response = await fetch(TASKS_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "update",
+          taskId,
+          status,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Task update failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      setTasksData(data);
+    } catch (error) {
+      alert(error.message || "Unable to update task.");
+    }
+  };
 
   const openGoogleMaps = () => {
     if (!hasLocation) return;
@@ -830,6 +926,96 @@ function App() {
         <section className="panel">
           <div className="panel-header">
             <div>
+              <p className="eyebrow">Supervisor Action</p>
+              <h2>Assign New Job</h2>
+            </div>
+          </div>
+
+          <form className="task-form" onSubmit={assignTask}>
+            <div className="form-grid">
+              <div>
+                <label>Assign To</label>
+                <select
+                  name="staffId"
+                  value={taskForm.staffId}
+                  onChange={handleTaskFormChange}
+                >
+                  {staffOptions.length === 0 ? (
+                    <option value="Staff-1">Staff-1</option>
+                  ) : (
+                    staffOptions.map((staffId) => (
+                      <option key={staffId} value={staffId}>
+                        {staffId}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label>Priority</label>
+                <select
+                  name="priority"
+                  value={taskForm.priority}
+                  onChange={handleTaskFormChange}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+
+              <div>
+                <label>Task Title</label>
+                <input
+                  name="title"
+                  value={taskForm.title}
+                  onChange={handleTaskFormChange}
+                  placeholder="Inspect Site A"
+                />
+              </div>
+
+              <div>
+                <label>Site Name</label>
+                <input
+                  name="siteName"
+                  value={taskForm.siteName}
+                  onChange={handleTaskFormChange}
+                  placeholder="Office Zone"
+                />
+              </div>
+
+              <div>
+                <label>Due Date</label>
+                <input
+                  type="datetime-local"
+                  name="dueDate"
+                  value={taskForm.dueDate}
+                  onChange={handleTaskFormChange}
+                />
+              </div>
+
+              <div className="form-full">
+                <label>Description</label>
+                <textarea
+                  name="description"
+                  value={taskForm.description}
+                  onChange={handleTaskFormChange}
+                  placeholder="Write job details for employee..."
+                  rows="3"
+                />
+              </div>
+            </div>
+
+            <div className="action-row">
+              <button type="submit">Assign Job</button>
+            </div>
+          </form>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
               <p className="eyebrow">Task Assignment</p>
               <h2>Supervisor Assigned Jobs</h2>
             </div>
@@ -846,13 +1032,14 @@ function App() {
                   <th>Site</th>
                   <th>Assigned By</th>
                   <th>Updated</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
 
               <tbody>
                 {selectedStaffTasks.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-cell">
+                    <td colSpan={8} className="empty-cell">
                       No tasks assigned yet.
                     </td>
                   </tr>
@@ -898,6 +1085,45 @@ function App() {
                       <td>{task.siteName || "--"}</td>
                       <td>{task.assignedBy || "--"}</td>
                       <td>{secondsAgo(task.updatedAt)}</td>
+                      <td>
+                        <div className="task-actions">
+                          {task.status === "pending" && (
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                updateTaskStatus(task.taskId, "in_progress");
+                              }}
+                            >
+                              Start
+                            </button>
+                          )}
+
+                          {task.status !== "completed" &&
+                            task.status !== "cancelled" && (
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  updateTaskStatus(task.taskId, "completed");
+                                }}
+                              >
+                                Complete
+                              </button>
+                            )}
+
+                          {task.status !== "completed" &&
+                            task.status !== "cancelled" && (
+                              <button
+                                className="danger-button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  updateTaskStatus(task.taskId, "cancelled");
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            )}
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
