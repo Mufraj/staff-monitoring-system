@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API_URL = "https://staff-monitoring-system.vercel.app/api/location";
+const ATTENDANCE_API_URL =
+  "https://staff-monitoring-system.vercel.app/api/attendance";
 
 function formatValue(value, fallback = "--") {
   if (value === null || value === undefined || value === "") return fallback;
@@ -67,13 +69,35 @@ function getStatusClass(status) {
   return "status-waiting";
 }
 
+function getAttendanceStatusLabel(status) {
+  if (status === "on_duty") return "On Duty";
+  if (status === "completed") return "Completed";
+  return formatValue(status);
+}
+
+function getAttendanceStatusClass(status) {
+  if (status === "on_duty") return "status-online";
+  if (status === "completed") return "status-waiting";
+  return "status-offline";
+}
+
+function getSeverityClass(severity) {
+  if (severity === "high") return "status-offline";
+  if (severity === "medium") return "status-waiting";
+  return "status-online";
+}
+
 function App() {
   const [dashboardData, setDashboardData] = useState(null);
+  const [attendanceData, setAttendanceData] = useState(null);
+
   const [selectedStaffId, setSelectedStaffId] = useState("all");
   const [refreshInterval, setRefreshInterval] = useState(5);
+
   const [showSettings, setShowSettings] = useState(false);
   const [showRawData, setShowRawData] = useState(false);
   const [showRawGga, setShowRawGga] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -85,7 +109,7 @@ function App() {
       const response = await fetch(API_URL);
 
       if (!response.ok) {
-        throw new Error(`API failed with status ${response.status}`);
+        throw new Error(`Location API failed with status ${response.status}`);
       }
 
       const data = await response.json();
@@ -98,17 +122,60 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchLocation();
+  const fetchAttendance = useCallback(async () => {
+    try {
+      const response = await fetch(ATTENDANCE_API_URL);
 
-    const timer = setInterval(fetchLocation, refreshInterval * 1000);
+      if (!response.ok) {
+        throw new Error(`Attendance API failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      setAttendanceData(data);
+    } catch (error) {
+      console.error("Attendance fetch error:", error);
+    }
+  }, []);
+
+  const refreshAll = useCallback(() => {
+    fetchLocation();
+    fetchAttendance();
+  }, [fetchLocation, fetchAttendance]);
+
+  useEffect(() => {
+    refreshAll();
+
+    const timer = setInterval(refreshAll, refreshInterval * 1000);
 
     return () => clearInterval(timer);
-  }, [fetchLocation, refreshInterval]);
+  }, [refreshAll, refreshInterval]);
 
   const staffList = useMemo(() => {
     return dashboardData?.staff || [];
   }, [dashboardData]);
+
+  const attendanceRecords = useMemo(() => {
+    return attendanceData?.records || [];
+  }, [attendanceData]);
+
+  const attendanceAlerts = useMemo(() => {
+    return attendanceData?.alerts || [];
+  }, [attendanceData]);
+
+  const staffOptions = useMemo(() => {
+    const ids = new Set();
+
+    staffList.forEach((staff) => {
+      if (staff.staffId) ids.add(staff.staffId);
+    });
+
+    attendanceRecords.forEach((record) => {
+      if (record.staffId) ids.add(record.staffId);
+    });
+
+    return Array.from(ids).sort();
+  }, [staffList, attendanceRecords]);
 
   const selectedStaff = useMemo(() => {
     if (selectedStaffId === "all") {
@@ -116,15 +183,42 @@ function App() {
     }
 
     return (
-      staffList.find((staff) => staff.staffId === selectedStaffId) ||
-      dashboardData?.latest ||
-      null
+      staffList.find((staff) => staff.staffId === selectedStaffId) || {
+        staffId: selectedStaffId,
+        status: "offline",
+      }
     );
   }, [dashboardData, selectedStaffId, staffList]);
 
+  const selectedAttendance = useMemo(() => {
+    if (selectedStaffId === "all") {
+      return attendanceRecords[0] || null;
+    }
+
+    return (
+      attendanceRecords.find((record) => record.staffId === selectedStaffId) ||
+      null
+    );
+  }, [attendanceRecords, selectedStaffId]);
+
   const onlineCount = dashboardData?.onlineCount || 0;
   const offlineCount = dashboardData?.offlineCount || 0;
-  const totalStaff = dashboardData?.count || staffList.length || 0;
+  const totalStaff = Math.max(
+    dashboardData?.count || 0,
+    staffOptions.length || 0
+  );
+
+  const onDutyCount = attendanceData?.onDutyCount || 0;
+  const completedCount = attendanceData?.completedCount || 0;
+  const lateCount = attendanceData?.lateCount || 0;
+  const alertCount = attendanceAlerts.length || 0;
+
+  const topStatus =
+    selectedStaffId === "all"
+      ? onlineCount > 0
+        ? "online"
+        : "offline"
+      : selectedStaff?.status || "offline";
 
   const hasLocation =
     selectedStaff?.latitude !== null &&
@@ -168,7 +262,8 @@ function App() {
         <nav className="sidebar-nav">
           <button className="nav-item active">Dashboard</button>
           <button className="nav-item">Staff Tracking</button>
-          <button className="nav-item">Receiver Health</button>
+          <button className="nav-item">Attendance</button>
+          <button className="nav-item">Alerts</button>
           <button className="nav-item">Reports</button>
         </nav>
 
@@ -184,20 +279,17 @@ function App() {
             <p className="eyebrow">Live Staff Monitoring</p>
             <h1>Staff Monitoring System</h1>
             <p className="subtitle">
-              Supervisor dashboard for RTK BLE receiver location tracking
+              Supervisor dashboard for RTK BLE receiver location, attendance,
+              and late alerts
             </p>
           </div>
 
           <div className="topbar-actions">
-            <span
-              className={`status-pill ${getStatusClass(
-                selectedStaff?.status || "offline"
-              )}`}
-            >
-              {selectedStaff?.status === "online" ? "Live" : "Offline"}
+            <span className={`status-pill ${getStatusClass(topStatus)}`}>
+              {topStatus === "online" ? "Live" : "Offline"}
             </span>
 
-            <button className="icon-button" onClick={fetchLocation}>
+            <button className="icon-button" onClick={refreshAll}>
               {loading ? "Syncing..." : "Refresh"}
             </button>
 
@@ -220,9 +312,9 @@ function App() {
               >
                 <option value="all">All Staff / Latest Active</option>
 
-                {staffList.map((staff) => (
-                  <option key={staff.staffId} value={staff.staffId}>
-                    {staff.staffId}
+                {staffOptions.map((staffId) => (
+                  <option key={staffId} value={staffId}>
+                    {staffId}
                   </option>
                 ))}
               </select>
@@ -290,6 +382,32 @@ function App() {
           </div>
         </section>
 
+        <section className="stats-grid">
+          <div className="stat-card success">
+            <p>On Duty</p>
+            <h2>{onDutyCount}</h2>
+            <span>Currently clocked in</span>
+          </div>
+
+          <div className="stat-card">
+            <p>Completed</p>
+            <h2>{completedCount}</h2>
+            <span>Clock-in and clock-out done</span>
+          </div>
+
+          <div className="stat-card danger">
+            <p>Late Staff</p>
+            <h2>{lateCount}</h2>
+            <span>Late arrival detected</span>
+          </div>
+
+          <div className="stat-card danger">
+            <p>Alerts</p>
+            <h2>{alertCount}</h2>
+            <span>Supervisor attention required</span>
+          </div>
+        </section>
+
         <section className="content-grid">
           <div className="panel location-panel">
             <div className="panel-header">
@@ -337,7 +455,9 @@ function App() {
             <div className="map-placeholder">
               <div>
                 <p>Coordinates</p>
-                <h3>{hasLocation ? coordinatesText : "Waiting for location"}</h3>
+                <h3>
+                  {hasLocation ? coordinatesText : "Waiting for location"}
+                </h3>
               </div>
             </div>
 
@@ -394,6 +514,112 @@ function App() {
           </div>
         </section>
 
+        <section className="content-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Attendance</p>
+                <h2>
+                  {selectedAttendance
+                    ? selectedAttendance.staffId
+                    : "No Attendance Data"}
+                </h2>
+              </div>
+
+              {selectedAttendance && (
+                <span
+                  className={`status-pill ${getAttendanceStatusClass(
+                    selectedAttendance.status
+                  )}`}
+                >
+                  {getAttendanceStatusLabel(selectedAttendance.status)}
+                </span>
+              )}
+            </div>
+
+            <div className="details-list">
+              <div>
+                <span>Clock In</span>
+                <strong>
+                  {selectedAttendance?.clockInLocalTime ||
+                    formatDateTime(selectedAttendance?.clockIn)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Clock Out</span>
+                <strong>
+                  {selectedAttendance?.clockOutLocalTime ||
+                    formatDateTime(selectedAttendance?.clockOut)}
+                </strong>
+              </div>
+
+              <div>
+                <span>Shift</span>
+                <strong>
+                  {selectedAttendance
+                    ? `${selectedAttendance.shiftStart} - ${selectedAttendance.shiftEnd}`
+                    : "--"}
+                </strong>
+              </div>
+
+              <div>
+                <span>Late Status</span>
+                <strong>
+                  {selectedAttendance?.isLate
+                    ? `Late by ${selectedAttendance.lateMinutes} min`
+                    : selectedAttendance
+                    ? "On Time"
+                    : "--"}
+                </strong>
+              </div>
+
+              <div>
+                <span>Attendance Date</span>
+                <strong>{formatValue(selectedAttendance?.date)}</strong>
+              </div>
+
+              <div>
+                <span>Last Event</span>
+                <strong>{formatValue(selectedAttendance?.lastEvent)}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Supervisor Alerts</p>
+                <h2>Late / Warning Alerts</h2>
+              </div>
+            </div>
+
+            <div className="details-list">
+              {attendanceAlerts.length === 0 ? (
+                <div>
+                  <span>Status</span>
+                  <strong>No alerts yet</strong>
+                </div>
+              ) : (
+                attendanceAlerts.slice(0, 5).map((alert) => (
+                  <div key={alert.alertId}>
+                    <span>
+                      <span
+                        className={`mini-status ${getSeverityClass(
+                          alert.severity
+                        )}`}
+                      >
+                        {alert.severity}
+                      </span>
+                    </span>
+                    <strong>{alert.message}</strong>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
+
         <section className="panel">
           <div className="panel-header">
             <div>
@@ -419,7 +645,7 @@ function App() {
               <tbody>
                 {staffList.length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="empty-cell">
+                    <td colSpan={7} className="empty-cell">
                       No staff location data received yet.
                     </td>
                   </tr>
@@ -455,6 +681,77 @@ function App() {
           </div>
         </section>
 
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Attendance Feed</p>
+              <h2>Daily Attendance Records</h2>
+            </div>
+          </div>
+
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Staff ID</th>
+                  <th>Date</th>
+                  <th>Clock In</th>
+                  <th>Clock Out</th>
+                  <th>Status</th>
+                  <th>Late</th>
+                  <th>Last Event</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {attendanceRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">
+                      No attendance data received yet.
+                    </td>
+                  </tr>
+                ) : (
+                  attendanceRecords.map((record) => (
+                    <tr
+                      key={record.attendanceId}
+                      onClick={() => setSelectedStaffId(record.staffId)}
+                      className={
+                        selectedStaffId === record.staffId ? "selected-row" : ""
+                      }
+                    >
+                      <td>{record.staffId}</td>
+                      <td>{record.date}</td>
+                      <td>
+                        {record.clockInLocalTime ||
+                          formatDateTime(record.clockIn)}
+                      </td>
+                      <td>
+                        {record.clockOutLocalTime ||
+                          formatDateTime(record.clockOut)}
+                      </td>
+                      <td>
+                        <span
+                          className={`mini-status ${getAttendanceStatusClass(
+                            record.status
+                          )}`}
+                        >
+                          {getAttendanceStatusLabel(record.status)}
+                        </span>
+                      </td>
+                      <td>
+                        {record.isLate
+                          ? `${record.lateMinutes} min late`
+                          : "On time"}
+                      </td>
+                      <td>{record.lastEvent}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         {showRawGga && (
           <section className="panel">
             <div className="panel-header">
@@ -478,7 +775,14 @@ function App() {
             </div>
 
             <pre className="raw-box">
-              {JSON.stringify(dashboardData, null, 2)}
+              {JSON.stringify(
+                {
+                  location: dashboardData,
+                  attendance: attendanceData,
+                },
+                null,
+                2
+              )}
             </pre>
           </section>
         )}
