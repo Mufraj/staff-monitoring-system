@@ -1,11 +1,10 @@
 // api/attendance.js
 
+const { supabaseRequest } = require("./_supabase");
+
 const DEFAULT_SHIFT_START = "09:00";
 const DEFAULT_SHIFT_END = "17:00";
 const TIME_ZONE = "Asia/Karachi";
-
-globalThis.attendanceRecords = globalThis.attendanceRecords || {};
-globalThis.attendanceAlerts = globalThis.attendanceAlerts || [];
 
 function addCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -17,6 +16,7 @@ function toNumber(value) {
   if (value === null || value === undefined || value === "") return null;
 
   const numberValue = Number(value);
+
   return Number.isFinite(numberValue) ? numberValue : null;
 }
 
@@ -50,7 +50,12 @@ function getTimeParts(dateValue) {
   const time = formatter.format(date);
   const [hour, minute] = time.split(":").map(Number);
 
-  return { hour, minute, totalMinutes: hour * 60 + minute, time };
+  return {
+    hour,
+    minute,
+    totalMinutes: hour * 60 + minute,
+    time,
+  };
 }
 
 function shiftToMinutes(shiftTime) {
@@ -78,38 +83,64 @@ function calculateLateStatus(timestamp, shiftStart) {
   };
 }
 
-function createLateAlert(record) {
-  const alertId = `ALERT-${Date.now()}`;
+function mapAttendanceRow(row) {
+  return {
+    attendanceId: row.attendance_id,
+    staffId: row.staff_id,
+    date: row.date,
+    shiftStart: row.shift_start,
+    shiftEnd: row.shift_end,
 
-  const alert = {
-    alertId,
-    staffId: record.staffId,
-    type: "late_arrival",
-    severity: record.lateMinutes >= 15 ? "high" : "medium",
-    message: `${record.staffId} arrived ${record.lateMinutes} minutes late.`,
-    time: new Date().toISOString(),
-    date: record.date,
-    acknowledged: false,
+    clockIn: row.clock_in,
+    clockOut: row.clock_out,
+
+    clockInLocalTime: row.clock_in_local_time,
+    clockOutLocalTime: row.clock_out_local_time,
+
+    status: row.status,
+
+    isLate: row.is_late,
+    lateMinutes: row.late_minutes,
+
+    latitude: row.latitude,
+    longitude: row.longitude,
+
+    source: row.source,
+    note: row.note,
+
+    lastEvent: row.last_event,
+    lastEventAt: row.last_event_at,
+
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
-
-  globalThis.attendanceAlerts.unshift(alert);
-
-  return alert;
 }
 
-function buildAttendanceList() {
-  return Object.values(globalThis.attendanceRecords).sort(
-    (a, b) => new Date(b.lastEventAt) - new Date(a.lastEventAt)
-  );
+function mapAlertRow(row) {
+  return {
+    alertId: row.alert_id,
+    staffId: row.staff_id,
+    type: row.type,
+    severity: row.severity,
+    message: row.message,
+    date: row.date,
+    acknowledged: row.acknowledged,
+    time: row.created_at,
+  };
 }
 
-function buildResponse() {
-  const records = buildAttendanceList();
+function buildResponse(recordRows, alertRows) {
+  const records = recordRows.map(mapAttendanceRow);
+  const alerts = alertRows.map(mapAlertRow);
 
-  const onDutyCount = records.filter((item) => item.status === "on_duty").length;
+  const onDutyCount = records.filter(
+    (item) => item.status === "on_duty"
+  ).length;
+
   const completedCount = records.filter(
     (item) => item.status === "completed"
   ).length;
+
   const lateCount = records.filter((item) => item.isLate).length;
 
   return {
@@ -120,11 +151,75 @@ function buildResponse() {
     lateCount,
     updatedAt: new Date().toISOString(),
     records,
-    alerts: globalThis.attendanceAlerts,
+    alerts,
   };
 }
 
-function handleClockIn(body) {
+async function fetchAttendanceData(staffId = null) {
+  let recordsPath =
+    "attendance_records?select=*&order=last_event_at.desc";
+
+  let alertsPath =
+    "attendance_alerts?select=*&order=created_at.desc";
+
+  if (staffId) {
+    recordsPath += `&staff_id=eq.${encodeURIComponent(staffId)}`;
+    alertsPath += `&staff_id=eq.${encodeURIComponent(staffId)}`;
+  }
+
+  const records = await supabaseRequest(recordsPath);
+  const alerts = await supabaseRequest(alertsPath);
+
+  return {
+    records,
+    alerts,
+  };
+}
+
+async function lateAlertExists(staffId, date) {
+  const rows = await supabaseRequest(
+    `attendance_alerts?select=*&staff_id=eq.${encodeURIComponent(
+      staffId
+    )}&date=eq.${encodeURIComponent(date)}&type=eq.late_arrival&limit=1`
+  );
+
+  return rows.length > 0;
+}
+
+async function createLateAlert(record) {
+  const alertId = `ALERT-${Date.now()}-${record.staff_id}`;
+
+  const alertPayload = {
+    alert_id: alertId,
+    staff_id: record.staff_id,
+    type: "late_arrival",
+    severity: record.late_minutes >= 15 ? "high" : "medium",
+    message: `${record.staff_id} arrived ${record.late_minutes} minutes late.`,
+    date: record.date,
+    acknowledged: false,
+    created_at: new Date().toISOString(),
+  };
+
+  const rows = await supabaseRequest("attendance_alerts", {
+    method: "POST",
+    prefer: "return=representation",
+    body: alertPayload,
+  });
+
+  return rows[0];
+}
+
+async function getExistingAttendance(attendanceId) {
+  const rows = await supabaseRequest(
+    `attendance_records?select=*&attendance_id=eq.${encodeURIComponent(
+      attendanceId
+    )}&limit=1`
+  );
+
+  return rows[0] || null;
+}
+
+async function handleClockIn(body) {
   const now = new Date().toISOString();
 
   const staffId = String(body.staffId || body.staff_id || "Staff-1");
@@ -133,29 +228,28 @@ function handleClockIn(body) {
   const shiftStart = body.shiftStart || DEFAULT_SHIFT_START;
   const shiftEnd = body.shiftEnd || DEFAULT_SHIFT_END;
 
-  const recordKey = `${staffId}_${date}`;
+  const attendanceId = `${staffId}_${date}`;
 
+  const existingRecord = await getExistingAttendance(attendanceId);
   const lateStatus = calculateLateStatus(timestamp, shiftStart);
 
-  const existingRecord = globalThis.attendanceRecords[recordKey];
-
-  const record = {
-    attendanceId: recordKey,
-    staffId,
+  const payload = {
+    attendance_id: attendanceId,
+    staff_id: staffId,
     date,
-    shiftStart,
-    shiftEnd,
+    shift_start: shiftStart,
+    shift_end: shiftEnd,
 
-    clockIn: timestamp,
-    clockOut: existingRecord?.clockOut || null,
+    clock_in: timestamp,
+    clock_out: existingRecord?.clock_out || null,
 
-    clockInLocalTime: lateStatus.clockInLocalTime,
-    clockOutLocalTime: existingRecord?.clockOutLocalTime || null,
+    clock_in_local_time: lateStatus.clockInLocalTime,
+    clock_out_local_time: existingRecord?.clock_out_local_time || null,
 
-    status: existingRecord?.clockOut ? "completed" : "on_duty",
+    status: existingRecord?.clock_out ? "completed" : "on_duty",
 
-    isLate: lateStatus.isLate,
-    lateMinutes: lateStatus.lateMinutes,
+    is_late: lateStatus.isLate,
+    late_minutes: lateStatus.lateMinutes,
 
     latitude: toNumber(body.latitude ?? body.lat),
     longitude: toNumber(body.longitude ?? body.lng ?? body.lon),
@@ -163,42 +257,48 @@ function handleClockIn(body) {
     source: body.source || "employee_app",
     note: body.note || null,
 
-    lastEvent: "clock_in",
-    lastEventAt: now,
-    createdAt: existingRecord?.createdAt || now,
-    updatedAt: now,
+    last_event: "clock_in",
+    last_event_at: now,
+    created_at: existingRecord?.created_at || now,
+    updated_at: now,
   };
 
-  globalThis.attendanceRecords[recordKey] = record;
+  const rows = await supabaseRequest(
+    "attendance_records?on_conflict=attendance_id",
+    {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=representation",
+      body: payload,
+    }
+  );
+
+  const savedRecord = rows[0];
 
   let alert = null;
 
-  const alreadyHasLateAlert = globalThis.attendanceAlerts.some(
-    (item) =>
-      item.staffId === staffId &&
-      item.date === date &&
-      item.type === "late_arrival"
-  );
+  if (savedRecord.is_late) {
+    const alreadyExists = await lateAlertExists(staffId, date);
 
-  if (record.isLate && !alreadyHasLateAlert) {
-    alert = createLateAlert(record);
+    if (!alreadyExists) {
+      alert = await createLateAlert(savedRecord);
+    }
   }
 
   return {
-    record,
+    record: savedRecord,
     alert,
   };
 }
 
-function handleClockOut(body) {
+async function handleClockOut(body) {
   const now = new Date().toISOString();
 
   const staffId = String(body.staffId || body.staff_id || "Staff-1");
   const timestamp = body.timestamp || body.time || now;
   const date = body.date || getDateKey(timestamp);
 
-  const recordKey = `${staffId}_${date}`;
-  const existingRecord = globalThis.attendanceRecords[recordKey];
+  const attendanceId = `${staffId}_${date}`;
+  const existingRecord = await getExistingAttendance(attendanceId);
 
   if (!existingRecord) {
     return {
@@ -210,102 +310,114 @@ function handleClockOut(body) {
 
   const clockOutTime = getTimeParts(timestamp);
 
-  const updatedRecord = {
-    ...existingRecord,
-    clockOut: timestamp,
-    clockOutLocalTime: clockOutTime.time,
-    status: "completed",
-    lastEvent: "clock_out",
-    lastEventAt: now,
-    updatedAt: now,
+  const latitude =
+    toNumber(body.latitude ?? body.lat) ?? existingRecord.latitude;
 
-    latitude: toNumber(body.latitude ?? body.lat) ?? existingRecord.latitude,
-    longitude:
-      toNumber(body.longitude ?? body.lng ?? body.lon) ??
-      existingRecord.longitude,
+  const longitude =
+    toNumber(body.longitude ?? body.lng ?? body.lon) ??
+    existingRecord.longitude;
+
+  const payload = {
+    clock_out: timestamp,
+    clock_out_local_time: clockOutTime.time,
+    status: "completed",
+    last_event: "clock_out",
+    last_event_at: now,
+    updated_at: now,
+    latitude,
+    longitude,
   };
 
-  globalThis.attendanceRecords[recordKey] = updatedRecord;
+  const rows = await supabaseRequest(
+    `attendance_records?attendance_id=eq.${encodeURIComponent(attendanceId)}`,
+    {
+      method: "PATCH",
+      prefer: "return=representation",
+      body: payload,
+    }
+  );
 
   return {
-    record: updatedRecord,
+    record: rows[0],
     alert: null,
   };
 }
 
-module.exports = function handler(req, res) {
+module.exports = async function handler(req, res) {
   addCorsHeaders(res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  if (req.method === "GET") {
-    const staffId = req.query.staffId;
+  try {
+    if (req.method === "GET") {
+      const staffId = req.query.staffId || null;
+      const { records, alerts } = await fetchAttendanceData(staffId);
 
-    if (staffId) {
-      const records = buildAttendanceList().filter(
-        (item) => item.staffId === staffId
-      );
+      if (staffId) {
+        return res.status(200).json({
+          success: true,
+          staffId,
+          count: records.length,
+          records: records.map(mapAttendanceRow),
+          alerts: alerts.map(mapAlertRow),
+        });
+      }
 
-      const alerts = globalThis.attendanceAlerts.filter(
-        (item) => item.staffId === staffId
-      );
+      return res.status(200).json(buildResponse(records, alerts));
+    }
+
+    if (req.method === "POST") {
+      const body = req.body || {};
+      const event = body.event || body.type;
+
+      if (!event) {
+        return res.status(400).json({
+          success: false,
+          message: "event is required. Use clock_in or clock_out.",
+        });
+      }
+
+      let result;
+
+      if (event === "clock_in") {
+        result = await handleClockIn(body);
+      } else if (event === "clock_out") {
+        result = await handleClockOut(body);
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid event. Use clock_in or clock_out.",
+        });
+      }
+
+      if (result.error) {
+        return res.status(result.statusCode || 400).json({
+          success: false,
+          message: result.message,
+        });
+      }
+
+      const { records, alerts } = await fetchAttendanceData();
 
       return res.status(200).json({
         success: true,
-        staffId,
-        count: records.length,
-        records,
-        alerts,
+        message: `${event} saved successfully`,
+        saved: mapAttendanceRow(result.record),
+        alert: result.alert ? mapAlertRow(result.alert) : null,
+        ...buildResponse(records, alerts),
       });
     }
 
-    return res.status(200).json(buildResponse());
-  }
-
-  if (req.method === "POST") {
-    const body = req.body || {};
-    const event = body.event || body.type;
-
-    if (!event) {
-      return res.status(400).json({
-        success: false,
-        message: "event is required. Use clock_in or clock_out.",
-      });
-    }
-
-    let result;
-
-    if (event === "clock_in") {
-      result = handleClockIn(body);
-    } else if (event === "clock_out") {
-      result = handleClockOut(body);
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid event. Use clock_in or clock_out.",
-      });
-    }
-
-    if (result.error) {
-      return res.status(result.statusCode || 400).json({
-        success: false,
-        message: result.message,
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: `${event} saved successfully`,
-      saved: result.record,
-      alert: result.alert,
-      ...buildResponse(),
+    return res.status(405).json({
+      success: false,
+      message: "Method not allowed",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
-
-  return res.status(405).json({
-    success: false,
-    message: "Method not allowed",
-  });
 };
