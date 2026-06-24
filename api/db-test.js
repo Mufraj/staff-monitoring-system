@@ -1,5 +1,9 @@
 // api/db-test.js
 
+module.exports.config = {
+  runtime: "nodejs",
+};
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
@@ -7,7 +11,7 @@ module.exports = async function handler(req, res) {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
   const cleanUrl = rawUrl.trim().replace(/\/$/, "");
-  const targetUrl = `${cleanUrl}/rest/v1/staff_locations?select=*&limit=1`;
+  const targetUrl = `${cleanUrl}/rest/v1/staff_locations?select=%2A&limit=1`;
 
   try {
     const response = await fetch(targetUrl, {
@@ -15,6 +19,7 @@ module.exports = async function handler(req, res) {
       headers: {
         apikey: serviceKey,
         Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
       },
     });
 
@@ -45,6 +50,8 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({
       success: false,
       message: error.message,
+      errorName: error.name,
+      errorCause: error.cause?.message || null,
       debug: {
         hasSupabaseUrl: Boolean(rawUrl),
         supabaseUrlPreview: cleanUrl,
