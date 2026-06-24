@@ -1,9 +1,9 @@
 // api/tasks.js
 
+const { supabaseRequest } = require("./_supabase");
+
 const VALID_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 const VALID_PRIORITIES = ["low", "medium", "high"];
-
-globalThis.staffTasks = globalThis.staffTasks || {};
 
 function addCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -31,14 +31,39 @@ function normalizePriority(priority) {
   return VALID_PRIORITIES.includes(normalized) ? normalized : "medium";
 }
 
-function buildTaskList() {
-  return Object.values(globalThis.staffTasks).sort(
-    (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
-  );
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? numberValue : null;
 }
 
-function buildResponse() {
-  const tasks = buildTaskList();
+function mapTaskRow(row) {
+  return {
+    taskId: row.task_id,
+    staffId: row.staff_id,
+    title: row.title,
+    description: row.description,
+    priority: row.priority,
+    status: row.status,
+    assignedBy: row.assigned_by,
+    assignedTo: row.assigned_to,
+    dueDate: row.due_date,
+    siteName: row.site_name,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    cancelledAt: row.cancelled_at,
+  };
+}
+
+function buildResponse(rows) {
+  const tasks = rows.map(mapTaskRow);
 
   const pendingCount = tasks.filter((task) => task.status === "pending").length;
   const inProgressCount = tasks.filter(
@@ -67,7 +92,21 @@ function buildResponse() {
   };
 }
 
-function createTask(body) {
+async function fetchTasks(query = {}) {
+  let path = "staff_tasks?select=*&order=updated_at.desc";
+
+  if (query.staffId) {
+    path += `&staff_id=eq.${encodeURIComponent(query.staffId)}`;
+  }
+
+  if (query.status) {
+    path += `&status=eq.${encodeURIComponent(query.status)}`;
+  }
+
+  return await supabaseRequest(path);
+}
+
+async function createTask(body) {
   const now = new Date().toISOString();
 
   const staffId = body.staffId || body.staff_id;
@@ -90,46 +129,39 @@ function createTask(body) {
 
   const taskId = body.taskId || generateTaskId();
 
-  const task = {
-    taskId,
-    staffId: String(staffId),
-
+  const payload = {
+    task_id: taskId,
+    staff_id: String(staffId),
     title: String(body.title),
     description: body.description ? String(body.description) : null,
-
     priority: normalizePriority(body.priority),
     status: normalizeStatus(body.status),
-
-    assignedBy: body.assignedBy || "Supervisor-1",
-    assignedTo: String(staffId),
-
-    dueDate: body.dueDate || null,
-    siteName: body.siteName || null,
-
-    latitude:
-      body.latitude !== undefined && body.latitude !== null
-        ? Number(body.latitude)
-        : null,
-    longitude:
-      body.longitude !== undefined && body.longitude !== null
-        ? Number(body.longitude)
-        : null,
-
-    createdAt: now,
-    updatedAt: now,
-    startedAt: null,
-    completedAt: null,
-    cancelledAt: null,
-
+    assigned_by: body.assignedBy || "Supervisor-1",
+    assigned_to: String(staffId),
+    due_date: body.dueDate || null,
+    site_name: body.siteName || null,
+    latitude: toNumber(body.latitude),
+    longitude: toNumber(body.longitude),
     notes: body.notes || null,
+    created_at: now,
+    updated_at: now,
+    started_at: null,
+    completed_at: null,
+    cancelled_at: null,
   };
 
-  globalThis.staffTasks[taskId] = task;
+  const rows = await supabaseRequest("staff_tasks", {
+    method: "POST",
+    prefer: "return=representation",
+    body: payload,
+  });
 
-  return { task };
+  return {
+    task: mapTaskRow(rows[0]),
+  };
 }
 
-function updateTask(body) {
+async function updateTask(body) {
   const now = new Date().toISOString();
 
   const taskId = body.taskId;
@@ -142,9 +174,11 @@ function updateTask(body) {
     };
   }
 
-  const existingTask = globalThis.staffTasks[taskId];
+  const existingRows = await supabaseRequest(
+    `staff_tasks?select=*&task_id=eq.${encodeURIComponent(taskId)}&limit=1`
+  );
 
-  if (!existingTask) {
+  if (existingRows.length === 0) {
     return {
       error: true,
       statusCode: 404,
@@ -152,117 +186,117 @@ function updateTask(body) {
     };
   }
 
+  const existingTask = existingRows[0];
+
   const newStatus = body.status
     ? normalizeStatus(body.status)
     : existingTask.status;
 
-  const updatedTask = {
-    ...existingTask,
-
+  const payload = {
     title: body.title ? String(body.title) : existingTask.title,
     description:
       body.description !== undefined
         ? body.description
         : existingTask.description,
-
     priority: body.priority
       ? normalizePriority(body.priority)
       : existingTask.priority,
-
     status: newStatus,
-    dueDate: body.dueDate !== undefined ? body.dueDate : existingTask.dueDate,
-    siteName:
-      body.siteName !== undefined ? body.siteName : existingTask.siteName,
-
+    due_date: body.dueDate !== undefined ? body.dueDate : existingTask.due_date,
+    site_name:
+      body.siteName !== undefined ? body.siteName : existingTask.site_name,
     notes: body.notes !== undefined ? body.notes : existingTask.notes,
-
-    updatedAt: now,
-
-    startedAt:
-      newStatus === "in_progress" && !existingTask.startedAt
+    updated_at: now,
+    started_at:
+      newStatus === "in_progress" && !existingTask.started_at
         ? now
-        : existingTask.startedAt,
-
-    completedAt:
-      newStatus === "completed" && !existingTask.completedAt
+        : existingTask.started_at,
+    completed_at:
+      newStatus === "completed" && !existingTask.completed_at
         ? now
-        : existingTask.completedAt,
-
-    cancelledAt:
-      newStatus === "cancelled" && !existingTask.cancelledAt
+        : existingTask.completed_at,
+    cancelled_at:
+      newStatus === "cancelled" && !existingTask.cancelled_at
         ? now
-        : existingTask.cancelledAt,
+        : existingTask.cancelled_at,
   };
 
-  globalThis.staffTasks[taskId] = updatedTask;
+  const rows = await supabaseRequest(
+    `staff_tasks?task_id=eq.${encodeURIComponent(taskId)}`,
+    {
+      method: "PATCH",
+      prefer: "return=representation",
+      body: payload,
+    }
+  );
 
-  return { task: updatedTask };
+  return {
+    task: mapTaskRow(rows[0]),
+  };
 }
 
-module.exports = function handler(req, res) {
+module.exports = async function handler(req, res) {
   addCorsHeaders(res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  if (req.method === "GET") {
-    const { staffId, status } = req.query;
+  try {
+    if (req.method === "GET") {
+      const rows = await fetchTasks({
+        staffId: req.query.staffId,
+        status: req.query.status,
+      });
 
-    let tasks = buildTaskList();
-
-    if (staffId) {
-      tasks = tasks.filter((task) => task.staffId === staffId);
+      return res.status(200).json(buildResponse(rows));
     }
 
-    if (status) {
-      tasks = tasks.filter((task) => task.status === status);
-    }
+    if (req.method === "POST") {
+      const body = req.body || {};
+      const action = body.action || "create";
 
-    return res.status(200).json({
-      ...buildResponse(),
-      count: tasks.length,
-      tasks,
-    });
-  }
+      let result;
 
-  if (req.method === "POST") {
-    const body = req.body || {};
-    const action = body.action || "create";
+      if (action === "create") {
+        result = await createTask(body);
+      } else if (action === "update" || action === "update_status") {
+        result = await updateTask(body);
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid action. Use create or update.",
+        });
+      }
 
-    let result;
+      if (result.error) {
+        return res.status(result.statusCode || 400).json({
+          success: false,
+          message: result.message,
+        });
+      }
 
-    if (action === "create") {
-      result = createTask(body);
-    } else if (action === "update" || action === "update_status") {
-      result = updateTask(body);
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid action. Use create or update.",
+      const rows = await fetchTasks();
+
+      return res.status(200).json({
+        success: true,
+        message:
+          action === "create"
+            ? "Task assigned successfully"
+            : "Task updated successfully",
+        saved: result.task,
+        ...buildResponse(rows),
       });
     }
 
-    if (result.error) {
-      return res.status(result.statusCode || 400).json({
-        success: false,
-        message: result.message,
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message:
-        action === "create"
-          ? "Task assigned successfully"
-          : "Task updated successfully",
-      saved: result.task,
-      ...buildResponse(),
+    return res.status(405).json({
+      success: false,
+      message: "Method not allowed",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
-
-  return res.status(405).json({
-    success: false,
-    message: "Method not allowed",
-  });
 };
